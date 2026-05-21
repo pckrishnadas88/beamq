@@ -1,6 +1,14 @@
 # BeamQ
 
-A simple job queue built with Erlang/OTP.
+A thread-safe, event-driven distributed background job queue built with Erlang/OTP. 
+
+Designed for deep learning of OTP fundamentals, process isolation, and explicit state management without the throughput bottlenecks of naive timer loops.
+
+## Core Architecture Concepts
+
+* **Atomic Checkout:** Grabbing a job and marking it as `running` happens inside a single, isolated transaction in the `beamq_store` process, making duplicate delivery physically impossible.
+* **Demand-Driven Dispatching:** The scheduler doesn't look at a clock to process work. It dynamically spawns workers when new jobs arrive or when a running worker finishes and opens up a processing slot.
+* **Strict Concurrency Capping:** Enforces a hard limit on simultaneous background processes (`MAX_CONCURRENT_JOBS`) to protect your resources from crashing under heavy load.
 
 ## Requirements
 
@@ -11,57 +19,91 @@ A simple job queue built with Erlang/OTP.
 
 ```bash
 rebar3 shell
+
 ```
 
-Then in the shell:
+Then in the shell, start the OTP application tree:
 
 ```erlang
-application:start(beamq).
+1> application:start(beamq).
+ok
+
 ```
 
-## Testing in the Shell
+## Testing Ecosystem Flow
 
-### Add a job
+### 1. Add Jobs Simultaneously
+
+Add multiple jobs to the system at the exact same time. The scheduler will automatically capture the signal, allocate slots up to your concurrency maximum, and queue the rest safely.
 
 ```erlang
-beamq_store:add_job(<<"hello">>).
+2> beamq_store:add_job(#{task => "send_welcome_email", user_id => 101}).
+1
+3> beamq_store:add_job(#{task => "render_video_clip", asset_id => 404}).
+2
+4> beamq_store:add_job(#{task => "sync_analytics"}).
+3
+
 ```
 
-### Check the queue
+### 2. Check Active Engine State
+
+Inspect the underlying ETS tables to observe the real-time explicit state updates of the running architecture:
 
 ```erlang
-ets:tab2list(jobs).
+5> ets:tab2list(jobs).
+
 ```
 
-### Manually trigger the scheduler
+### 3. Simulating Failure and Backoff (Phase 2 Testing)
+
+To view the error capture and non-blocking asynchronous exponential backoff mechanism in action, queue a job explicitly carrying a `crash` directive payload:
 
 ```erlang
-beamq_scheduler ! tick.
+6> beamq_store:add_job(#{task => "flaky_third_party_api", action => crash}).
+4
+
 ```
 
-### Full test in 3 lines
-
-```erlang
-beamq_store:add_job(<<"hello">>).
-beamq_scheduler ! tick.
-ets:tab2list(jobs).
-```
+*Observe how the worker catches the error, drops the slot, and safely parks the job in `retry_delay` status while an asynchronous alarm counts down.*
 
 ## Project Structure
 
-```
+```text
 beamq/
 ├── src/
-│   ├── beamq_app.erl        # application entry point
-│   ├── beamq_sup.erl        # supervisor
-│   ├── beamq_store.erl      # job storage (ETS)
-│   ├── beamq_scheduler.erl  # ticks every 1 second
-│   └── beamq_worker.erl     # runs jobs
+│   ├── beamq_app.erl         # Application behavior and startup initialization
+│   ├── beamq_sup.erl         # Supervision tree strategy (One_For_All protection)
+│   ├── beamq_store.erl       # Thread-safe job storage engine and atomic locking (ETS)
+│   ├── beamq_scheduler.erl   # Concurrency-capped governor managing worker pools via process monitors
+│   └── beamq_worker.erl      # Isolated execution environments running background calculations
 └── rebar.config
-```
-
-## Job Flow
 
 ```
-add_job → ready → scheduler picks up → worker runs → done
+
+## State Machine Transition Matrix
+
+```text
+                [ Job Produced ]
+                       │
+                       ▼
+                 ┌───────────┐
+                 │   ready   │
+                 └─────┬─────┘
+                       │ (Scheduler Checkout)
+                       ▼
+                 ┌───────────┐
+                 │  running  │
+                 └─┬───────┬─┘
+                   │       │
+   Worker Success  │       │  Worker Crashes (Attempts < Max)
+                   ▼       ▼
+        ┌───────────┐     ┌───────────────┐
+        │ completed │     │  retry_delay  │
+        └───────────┘     └───────┬───────┘
+                                  │
+                                  │ (Async Alarm Trigger)
+                                  ▼
+                            [ Back to ready ]
+
 ```
