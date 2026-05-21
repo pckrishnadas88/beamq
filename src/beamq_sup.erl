@@ -17,4 +17,4 @@ init([]) ->
             permanent, 5000, worker, [beamq_scheduler]}
     ],
 
-    {ok, {{one_for_one, 5, 10}, Children}}.
+    {ok, {{one_for_all, 5, 10}, Children}}.
