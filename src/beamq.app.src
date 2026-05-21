@@ -1,0 +1,12 @@
+{application, beamq,
+ [
+  {description, "Minimal Erlang Job Queue"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {modules, []},
+  {applications, [
+    kernel,
+    stdlib
+  ]},
+  {mod, {beamq_app, []}}
+ ]}.
